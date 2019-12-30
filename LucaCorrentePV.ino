@@ -126,7 +126,7 @@ void handleGraph()
   server.sendHeader("Cache-Control", "no-cache");
   server.sendHeader("Transfer-Encoding", "chunked");
   server.send(200, "image/svg+xml");
-  server.sendContent("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 4140 600\"> preserveAspectRatio=\"none\"\n");
+  server.sendContent("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 4140 600\" preserveAspectRatio=\"none\">\n");
   server.sendContent("<rect width=\"100%\" height=\"100%\" fill=\"#3d3d35\"/>\n");
 
   //for(int i=0; i<LEN/CHUCNKSIZE; i++) {
