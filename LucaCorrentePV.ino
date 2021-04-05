@@ -1,3 +1,4 @@
+#define BLYNK_PRINT Serial
 // Libraries Required
 #include <BlynkSimpleEsp8266.h>   //Blynk magic
 #include <ESP8266httpUpdate.h>    //For OTA Update
@@ -5,14 +6,36 @@
 #include <ESP8266WebServer.h>
 #include "LowPassFilter.h"
 
-static const char auth[] = "3Ces1f8NBl4PrGAqDKKDddCIrrNwWPb7";
+
+// -- SPI --------- SPI
+
+#include <SPI.h>
+int i = 0, a0, a1;
+unsigned long old_time;
+unsigned long delta;
+unsigned long pitch;
+byte s, s1, L0, U0, L1, U1;
+
+// -- SPI --------- SPI
+
+
 static const char BlynkServer[] = "lucanet.ddns.net";
+static const char auth[] = "3Ces1f8NBl4PrGAqDKKDddCIrrNwWPb7";
 static const char ssid[] = "WebCube42-AB50";
 static const char pass[] = "ED248443";
+//char auth[] = "OUbg10Z2bMiggS-7ZkJtvSEg7I1FMqJi";
+//char ssid[] = "LucaNet";
+//char pass[] = "B3ppon3123456";
+IPAddress device_ip  (192, 168,   19,  80);
+IPAddress dns_ip     (  8,   8,   8,   8);
+IPAddress gateway_ip (192, 168,   19,   1);
+IPAddress subnet_mask(255, 255, 255,   0);
+
+
 
 ESP8266WebServer server(80);
 
-#define LEN 2048
+#define LEN 512 //2048
 #define CHUCNKSIZE 16
 
 RunningStatistics inputStats;
@@ -29,6 +52,61 @@ int sensor[LEN];
 int analisi[LEN];
 double filterValue;
 double filter[LEN];
+int toggle = 0;
+int counter = 0;
+
+byte Tri, Tri_old;
+
+void spi_com()
+{
+  //cli();
+  //digitalWrite(SS, LOW); // enable Slave Select
+  //delayMicroseconds(19);
+  s = SPI.transfer ('r');
+  delayMicroseconds(12);//12
+  s1 = SPI.transfer (0);
+  delayMicroseconds(5);//5
+  L0 = SPI.transfer (0);
+  delayMicroseconds(12);//12
+  U0 = SPI.transfer (0);
+  delayMicroseconds(12);//12
+  L1 = SPI.transfer (0);
+  //delayMicroseconds(1);
+  //digitalWrite(SS, HIGH); // disable Slave Select
+  //sei();
+  U1 = U0 & B00001100;
+
+  Tri_old = Tri;
+  Tri = (U0 & B11110000);
+  if (counter == 0) {
+    Tri_old = Tri - 16;
+  }
+  if ( ((Tri - Tri_old - 16) % 256) != 0)
+  {
+    if ( s1 != 97) {
+      Serial.write(s1);
+      Serial.println("BAD");
+    }
+    Serial.print(Tri - Tri_old - 16);
+    Serial.print(',');
+    Serial.print(counter);
+    Serial.println("Errore");
+    yield();
+    //return;
+  }
+
+
+  U1 = U1 >> 2;
+  U0 = U0 & B00000011;
+  //a0=L0;
+  a0 = ((int)(U0 << 8)) + L0;
+  a1 = ((int)(U1 << 8)) + L1;
+  //Serial.print(".");
+}
+
+
+
+
 
 void fun()
 {
@@ -37,39 +115,66 @@ void fun()
   int voltetransizioni = 0;
   int stato, statoold = +1;
   unsigned long starttime, deltatime;
-  int counter = 0;
+  //int counter = 0;
   int counterold = 0;
   double sensormean = 0;
   float high = 545;
   float low = 545;
   float FiltMean = 0, FiltMin = 1025, FiltMax = -1;
 
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(200);
+  digitalWrite(LED_BUILTIN, HIGH);
+
   LowPassFilter lpf = LowPassFilter(545.0);
 
-
+  //if (toggle == 1)
+  //{
+  //  toggle = 0;
+  //}
+  //else
+  //{
+  //  toggle = 1;
+  //}
+  //Serial.print("TOGGLE  ");
+  //Serial.println(toggle);
+  counter = 0;
   while (voltetransizioni < 100 + 5)
   {
     counter++;
+    //yield();
     if (counter >= 4000)
       break;
-    sensorValue = analogRead(A0);
+    //toggle=1;
+    if (toggle == 1)
+    {
+      spi_com();
+      sensorValue = 1.65 * a0; //+260;
+      //delayMicroseconds(100);
+      //yield();
+    }
+    else
+    {
+      sensorValue = analogRead(A0);
+    }
+    //Serial.println(sensorValue);
     if ( sensorValue < sensormin) sensormin =  sensorValue;
     if ( sensorValue > sensormax) sensormax =  sensorValue;
 
     inputStats.input(sensorValue);
     sensormean = sensormean * (counter - 1) / counter +  sensorValue * 1.0 / counter;
-    
-    
+
+
     /*high = K_high * sensorValue + (1 - K_high) * high;
-    low = K_low * sensorValue + (1 - K_low) * low;
-    filterValue = high;*/
+      low = K_low * sensorValue + (1 - K_low) * low;
+      filterValue = high;*/
 
     filterValue = lpf.filter(sensorValue);
-    
+
     if ( filterValue < FiltMin) FiltMin = filterValue;
     if ( filterValue > FiltMax) FiltMax = filterValue;
     FiltMean = FiltMean * (counter - 1) / counter +  filterValue * 1.0 / counter;
-    
+
 
     if ( (filterValue) > FiltMean * (1.0 - banda) + FiltMax * (banda))
       stato = +1 ;
@@ -82,7 +187,7 @@ void fun()
     {
       sensor[counter] = sensorValue;
       analisi[counter] = stato;
-      filter[counter-FILTERLEN/2] = filterValue;
+      filter[counter - FILTERLEN / 2] = filterValue;
     }
 
     if (((stato == +1) | (stato == -1)) && (stato != statoold) && (counter > counterold + scarto))
@@ -97,6 +202,21 @@ void fun()
 
   deltatime = micros() - starttime;
   double freq = (10000000000.0 / deltatime) / 2.0;
+
+  for (int i = 17; i < 250; i = i + 1) //LEN 17
+  {
+    Serial.print(80 + 20 * toggle);
+    Serial.print(",");
+    Serial.print(counter / 10.0);
+    Serial.print(",");
+    Serial.println(sensor[i]);
+
+    yield();
+  }
+
+  //Serial.print("80,");
+  //Serial.println("100");
+
 
   for (int i = 0; i < LEN; i++)
   {
@@ -116,7 +236,11 @@ void fun()
   Blynk.virtualWrite(V6, freq);
   Blynk.virtualWrite(V7, FiltMin);
   Blynk.virtualWrite(V8, FiltMax);
+  Blynk.virtualWrite(V30, counter);
+  Blynk.virtualWrite(V98, toggle);
+
 }
+
 
 
 
@@ -126,7 +250,7 @@ void handleGraph()
   server.sendHeader("Cache-Control", "no-cache");
   server.sendHeader("Transfer-Encoding", "chunked");
   server.send(200, "image/svg+xml");
-  server.sendContent("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 4140 600\" preserveAspectRatio=\"none\">\n");
+  server.sendContent("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 4140 600\"> preserveAspectRatio=\"none\"\n");
   server.sendContent("<rect width=\"100%\" height=\"100%\" fill=\"#3d3d35\"/>\n");
 
   //for(int i=0; i<LEN/CHUCNKSIZE; i++) {
@@ -200,14 +324,26 @@ void handleGraph()
 }
 
 void setup(void) {
+  pinMode(LED_BUILTIN, OUTPUT);//2
+  digitalWrite(LED_BUILTIN, HIGH);
+
   integraleWattSecondo = 0.0;
   inputStats.setWindowSecs(40.0 / 50.0);
   tempovecchio = millis();
   pinMode(5, INPUT);
   pinMode(A0, INPUT);
+  Serial.begin(57600);//115200
+  //Blynk.begin(auth, ssid, pass, BlynkServer, 8080);
 
-  Blynk.begin(auth, ssid, pass, BlynkServer, 8080);
-  timer.setInterval(8000L, fun);
+  timer.setInterval(4000L, fun);
+
+  WiFi.config(device_ip, dns_ip, gateway_ip, subnet_mask);
+  WiFi.begin(ssid, pass);
+  Blynk.config(auth, BlynkServer, 8080);
+  delay(4000);
+  Blynk.connect();
+  delay(4000);
+
   terminal.clear();
   terminal.println("Device started");
   terminal.println("-------------");
@@ -221,10 +357,35 @@ void setup(void) {
   });
   server.on("/graph", handleGraph);
   server.begin();
+
+  // --- SPI -----------
+  //digitalWrite(SS, HIGH); // Slave Select
+  digitalWrite(SS, LOW); // Slave Select
+
+  SPI.begin ();
+  SPI.setClockDivider(SPI_CLOCK_DIV8);//divide the clock by 8
+  // --- SPI -----------------
+
+
 }
 
 void loop(void) {
-  Blynk.run();
+  if (Blynk.connected())
+  {
+    Blynk.run();
+  }
+  else
+  {
+    if (WiFi.status() != WL_CONNECTED)
+    {
+      WiFi.begin(ssid, pass);
+      Serial.print("Wait wifi");
+     delay(2000);
+    }
+    Blynk.connect();
+    delay(2000);
+  }
+
   timer.run();
   server.handleClient();
 }
@@ -292,4 +453,12 @@ BLYNK_WRITE(InternalPinOTA) {
       ESP.restart();
       break;
   }
+}
+BLYNK_WRITE(V99) // V5 is the number of Virtual Pin
+{
+  int pinValue = param.asInt();
+  Serial.print("Il valore letto dal pin virtuale V99: ");
+  Serial.println(pinValue);
+  toggle = pinValue;
+
 }
