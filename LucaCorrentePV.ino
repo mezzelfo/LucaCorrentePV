@@ -1,44 +1,22 @@
 #define BLYNK_PRINT Serial
-// Libraries Required
-#include <BlynkSimpleEsp8266.h>   //Blynk magic
-#include <ESP8266httpUpdate.h>    //For OTA Update
-#include <Filters.h>
-#include <ESP8266WebServer.h>
+#define BLYNK_TIMEOUT_MS 500
+#define LEN 512 //Lunghezza vettori readings
+
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <BlynkSimpleEsp32.h>
 #include "LowPassFilter.h"
+#include <HTTPUpdate.h>
+#include <Filters.h>
+
+#include <FS.h> //SPIFFS
+#include <SPIFFS.h> //SPIFFS
+
+WiFiClient client; //OTA
 
 
-// -- SPI --------- SPI
-
-#include <SPI.h>
-int i = 0, a0, a1;
-unsigned long old_time;
-unsigned long delta;
-unsigned long pitch;
-byte s, s1, L0, U0, L1, U1;
-
-// -- SPI --------- SPI
-
-
-static const char BlynkServer[] = "lucanet.ddns.net";
-static const char auth[] = "3Ces1f8NBl4PrGAqDKKDddCIrrNwWPb7";
-static const char ssid[] = "WebCube42-AB50";
-static const char pass[] = "ED248443";
-//char auth[] = "OUbg10Z2bMiggS-7ZkJtvSEg7I1FMqJi";
-//char ssid[] = "LucaNet";
-//char pass[] = "B3ppon3123456";
-IPAddress device_ip  (192, 168,   19,  80);
-IPAddress dns_ip     (  8,   8,   8,   8);
-IPAddress gateway_ip (192, 168,   19,   1);
-IPAddress subnet_mask(255, 255, 255,   0);
-
-
-
-ESP8266WebServer server(80);
-
-#define LEN 512 //2048
-#define CHUCNKSIZE 16
-
-RunningStatistics inputStats;
 BlynkTimer timer;
 WidgetTerminal terminal(V0);
 
@@ -57,56 +35,19 @@ int counter = 0;
 
 byte Tri, Tri_old;
 
-void spi_com()
-{
-  //cli();
-  //digitalWrite(SS, LOW); // enable Slave Select
-  //delayMicroseconds(19);
-  s = SPI.transfer ('r');
-  delayMicroseconds(12);//12
-  s1 = SPI.transfer (0);
-  delayMicroseconds(5);//5
-  L0 = SPI.transfer (0);
-  delayMicroseconds(12);//12
-  U0 = SPI.transfer (0);
-  delayMicroseconds(12);//12
-  L1 = SPI.transfer (0);
-  //delayMicroseconds(1);
-  //digitalWrite(SS, HIGH); // disable Slave Select
-  //sei();
-  U1 = U0 & B00001100;
-
-  Tri_old = Tri;
-  Tri = (U0 & B11110000);
-  if (counter == 0) {
-    Tri_old = Tri - 16;
-  }
-  if ( ((Tri - Tri_old - 16) % 256) != 0)
-  {
-    if ( s1 != 97) {
-      Serial.write(s1);
-      Serial.println("BAD");
-    }
-    Serial.print(Tri - Tri_old - 16);
-    Serial.print(',');
-    Serial.print(counter);
-    Serial.println("Errore");
-    yield();
-    //return;
-  }
-
-
-  U1 = U1 >> 2;
-  U0 = U0 & B00000011;
-  //a0=L0;
-  a0 = ((int)(U0 << 8)) + L0;
-  a1 = ((int)(U1 << 8)) + L1;
-  //Serial.print(".");
-}
 
 
 
+bool online = 0;
 
+AsyncWebServer server(80);
+
+RunningStatistics inputStats;
+
+static const char BlynkServer[] = "lucanet.ddns.net";
+static const char auth[] = "3Ces1f8NBl4PrGAqDKKDddCIrrNwWPb7";
+static const char ssid[] = "WebCube42-AB50";
+static const char pass[] = "ED248443";
 
 void fun()
 {
@@ -122,9 +63,9 @@ void fun()
   float low = 545;
   float FiltMean = 0, FiltMin = 1025, FiltMax = -1;
 
-  digitalWrite(LED_BUILTIN, LOW);
+  digitalWrite(2, LOW);
   delay(200);
-  digitalWrite(LED_BUILTIN, HIGH);
+  digitalWrite(2, HIGH);
 
   LowPassFilter lpf = LowPassFilter(545.0);
 
@@ -145,18 +86,9 @@ void fun()
     //yield();
     if (counter >= 4000)
       break;
-    //toggle=1;
-    if (toggle == 1)
-    {
-      spi_com();
-      sensorValue = 1.65 * a0; //+260;
-      //delayMicroseconds(100);
-      //yield();
-    }
-    else
-    {
-      sensorValue = analogRead(A0);
-    }
+    
+    sensorValue = analogRead(A0);
+    
     //Serial.println(sensorValue);
     if ( sensorValue < sensormin) sensormin =  sensorValue;
     if ( sensorValue > sensormax) sensormax =  sensorValue;
@@ -242,152 +174,100 @@ void fun()
 }
 
 
-
-
-void handleGraph()
-{
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.sendHeader("Cache-Control", "no-cache");
-  server.sendHeader("Transfer-Encoding", "chunked");
-  server.send(200, "image/svg+xml");
-  server.sendContent("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 4140 600\"> preserveAspectRatio=\"none\"\n");
-  server.sendContent("<rect width=\"100%\" height=\"100%\" fill=\"#3d3d35\"/>\n");
-
-  //for(int i=0; i<LEN/CHUCNKSIZE; i++) {
-  for (int i = 1; i < 400 / CHUCNKSIZE; i++) {
-    char chunk[800];
-    sprintf(chunk, "<polyline points=\"%d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d\" fill=\"none\" stroke=\"white\"/>\n)",
-            10 * (CHUCNKSIZE * i - 1),   sensor[CHUCNKSIZE * i - 1],
-            10 * (CHUCNKSIZE * i + 0),   sensor[CHUCNKSIZE * i + 0],
-            10 * (CHUCNKSIZE * i + 1),   sensor[CHUCNKSIZE * i + 1],
-            10 * (CHUCNKSIZE * i + 2),   sensor[CHUCNKSIZE * i + 2],
-            10 * (CHUCNKSIZE * i + 3),   sensor[CHUCNKSIZE * i + 3],
-            10 * (CHUCNKSIZE * i + 4),   sensor[CHUCNKSIZE * i + 4],
-            10 * (CHUCNKSIZE * i + 5),   sensor[CHUCNKSIZE * i + 5],
-            10 * (CHUCNKSIZE * i + 6),   sensor[CHUCNKSIZE * i + 6],
-            10 * (CHUCNKSIZE * i + 7),   sensor[CHUCNKSIZE * i + 7],
-            10 * (CHUCNKSIZE * i + 8),   sensor[CHUCNKSIZE * i + 8],
-            10 * (CHUCNKSIZE * i + 9),   sensor[CHUCNKSIZE * i + 9],
-            10 * (CHUCNKSIZE * i + 10),  sensor[CHUCNKSIZE * i + 10],
-            10 * (CHUCNKSIZE * i + 11),  sensor[CHUCNKSIZE * i + 11],
-            10 * (CHUCNKSIZE * i + 12),  sensor[CHUCNKSIZE * i + 12],
-            10 * (CHUCNKSIZE * i + 13),  sensor[CHUCNKSIZE * i + 13],
-            10 * (CHUCNKSIZE * i + 14),  sensor[CHUCNKSIZE * i + 14],
-            10 * (CHUCNKSIZE * i + 15),  sensor[CHUCNKSIZE * i + 15]
-           );
-    server.sendContent(chunk);
-
-    sprintf(chunk, "<polyline points=\"%d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f %d,%f\" fill=\"none\" stroke=\"#42f700\"/>\n)",
-            10 * (CHUCNKSIZE * i - 1),   filter[CHUCNKSIZE * i - 1],
-            10 * (CHUCNKSIZE * i + 0),   filter[CHUCNKSIZE * i + 0],
-            10 * (CHUCNKSIZE * i + 1),   filter[CHUCNKSIZE * i + 1],
-            10 * (CHUCNKSIZE * i + 2),   filter[CHUCNKSIZE * i + 2],
-            10 * (CHUCNKSIZE * i + 3),   filter[CHUCNKSIZE * i + 3],
-            10 * (CHUCNKSIZE * i + 4),   filter[CHUCNKSIZE * i + 4],
-            10 * (CHUCNKSIZE * i + 5),   filter[CHUCNKSIZE * i + 5],
-            10 * (CHUCNKSIZE * i + 6),   filter[CHUCNKSIZE * i + 6],
-            10 * (CHUCNKSIZE * i + 7),   filter[CHUCNKSIZE * i + 7],
-            10 * (CHUCNKSIZE * i + 8),   filter[CHUCNKSIZE * i + 8],
-            10 * (CHUCNKSIZE * i + 9),   filter[CHUCNKSIZE * i + 9],
-            10 * (CHUCNKSIZE * i + 10),  filter[CHUCNKSIZE * i + 10],
-            10 * (CHUCNKSIZE * i + 11),  filter[CHUCNKSIZE * i + 11],
-            10 * (CHUCNKSIZE * i + 12),  filter[CHUCNKSIZE * i + 12],
-            10 * (CHUCNKSIZE * i + 13),  filter[CHUCNKSIZE * i + 13],
-            10 * (CHUCNKSIZE * i + 14),  filter[CHUCNKSIZE * i + 14],
-            10 * (CHUCNKSIZE * i + 15),  filter[CHUCNKSIZE * i + 15]
-           );
-    server.sendContent(chunk);
-
-    sprintf(chunk, "<polyline points=\"%d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d %d,%d\" fill=\"none\" stroke=\"red\"/>\n)",
-            10 * (CHUCNKSIZE * i - 1),   analisi[CHUCNKSIZE * i - 1],
-            10 * (CHUCNKSIZE * i + 0),   analisi[CHUCNKSIZE * i + 0],
-            10 * (CHUCNKSIZE * i + 1),   analisi[CHUCNKSIZE * i + 1],
-            10 * (CHUCNKSIZE * i + 2),   analisi[CHUCNKSIZE * i + 2],
-            10 * (CHUCNKSIZE * i + 3),   analisi[CHUCNKSIZE * i + 3],
-            10 * (CHUCNKSIZE * i + 4),   analisi[CHUCNKSIZE * i + 4],
-            10 * (CHUCNKSIZE * i + 5),   analisi[CHUCNKSIZE * i + 5],
-            10 * (CHUCNKSIZE * i + 6),   analisi[CHUCNKSIZE * i + 6],
-            10 * (CHUCNKSIZE * i + 7),   analisi[CHUCNKSIZE * i + 7],
-            10 * (CHUCNKSIZE * i + 8),   analisi[CHUCNKSIZE * i + 8],
-            10 * (CHUCNKSIZE * i + 9),   analisi[CHUCNKSIZE * i + 9],
-            10 * (CHUCNKSIZE * i + 10),  analisi[CHUCNKSIZE * i + 10],
-            10 * (CHUCNKSIZE * i + 11),  analisi[CHUCNKSIZE * i + 11],
-            10 * (CHUCNKSIZE * i + 12),  analisi[CHUCNKSIZE * i + 12],
-            10 * (CHUCNKSIZE * i + 13),  analisi[CHUCNKSIZE * i + 13],
-            10 * (CHUCNKSIZE * i + 14),  analisi[CHUCNKSIZE * i + 14],
-            10 * (CHUCNKSIZE * i + 15),  analisi[CHUCNKSIZE * i + 15]
-           );
-    server.sendContent(chunk);
+void CheckConnection(){    // check every 11s if connected to Blynk server
+  if(!Blynk.connected()){
+    online = 0;
+    yield();
+    if (WiFi.status() != WL_CONNECTED)
+    {
+      Serial.println("Not connected to Wifi! Connect...");
+      Blynk.connectWiFi(ssid, pass); // used with Blynk.connect() in place of Blynk.begin(auth, ssid, pass, server, port);
+      //WiFi.config(arduino_ip, gateway_ip, subnet_mask);
+      //WiFi.begin(ssid, pass);
+      delay(400); //give it some time to connect
+      if (WiFi.status() != WL_CONNECTED)
+      {
+        Serial.println("Cannot connect to WIFI!");
+        online = 0;
+      }
+      else
+      {
+        Serial.println("Connected to wifi!");
+      }
+    }
+    
+    if ( WiFi.status() == WL_CONNECTED && !Blynk.connected() )
+    {
+      Serial.println("Not connected to Blynk Server! Connecting..."); 
+      Blynk.connect();  // // It has 3 attempts of the defined BLYNK_TIMEOUT_MS to connect to the server, otherwise it goes to the enxt line 
+      if(!Blynk.connected()){
+        Serial.println("Connection failed!"); 
+        online = 0;
+      }
+      else
+      {
+        online = 1;
+      }
+    }
   }
-  server.sendContent("</svg>\n");
-  server.sendContent("");
+  else{
+    Serial.println("Connected to Blynk server!"); 
+    online = 1;    
+  }
 }
 
-void setup(void) {
-  pinMode(LED_BUILTIN, OUTPUT);//2
-  digitalWrite(LED_BUILTIN, HIGH);
+void setup() {
+  pinMode(2, OUTPUT);
+  digitalWrite(GPIO_NUM_2, HIGH);
 
   integraleWattSecondo = 0.0;
-  inputStats.setWindowSecs(40.0 / 50.0);
+  //inputStats.setWindowSecs(40.0 / 50.0);
   tempovecchio = millis();
   pinMode(5, INPUT);
   pinMode(A0, INPUT);
-  Serial.begin(57600);//115200
-  //Blynk.begin(auth, ssid, pass, BlynkServer, 8080);
 
-  timer.setInterval(4000L, fun);
+  SPIFFS.begin();  
+  
+  Serial.begin(115200);
+  Serial.println();
 
-  WiFi.config(device_ip, dns_ip, gateway_ip, subnet_mask);
-  WiFi.begin(ssid, pass);
   Blynk.config(auth, BlynkServer, 8080);
-  delay(4000);
-  Blynk.connect();
-  delay(4000);
+  CheckConnection();
+  timer.setInterval(5000L, CheckConnection);
+  timer.setInterval(4000L, fun);
 
   terminal.clear();
   terminal.println("Device started");
   terminal.println("-------------");
   terminal.flush();
 
-  server.on("/", []() {
-    server.send(200, "text/plain", "Hello world! Visit /graph");
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+      request->send(200, "text/plain", "Hello world! Visit /graph");
   });
-  server.onNotFound([]() {
-    server.send(404, "text/plain", "wizardry not found :(");
+  server.onNotFound([](AsyncWebServerRequest *request){
+    request->send(404, "text/plain", "wizardry not found :(");
   });
-  server.on("/graph", handleGraph);
+  server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request){
+    AsyncResponseStream *response = request->beginResponseStream("text/html");
+    response->addHeader("Server","ESP Async Web Server");
+    for (int i = 0; i < LEN; i++)
+    {
+      response->printf("%d,%d\n",i,sensor[i]);
+    }
+    request->send(response);
+  });
+  server.on("/graph", HTTP_GET, [](AsyncWebServerRequest *request){
+      request->send(SPIFFS, "/graph.html");
+  });
   server.begin();
-
-  // --- SPI -----------
-  //digitalWrite(SS, HIGH); // Slave Select
-  digitalWrite(SS, LOW); // Slave Select
-
-  SPI.begin ();
-  SPI.setClockDivider(SPI_CLOCK_DIV8);//divide the clock by 8
-  // --- SPI -----------------
-
-
 }
 
-void loop(void) {
-  if (Blynk.connected())
-  {
+void loop() {
+  if(Blynk.connected()){
     Blynk.run();
   }
-  else
-  {
-    if (WiFi.status() != WL_CONNECTED)
-    {
-      WiFi.begin(ssid, pass);
-      Serial.print("Wait wifi");
-     delay(2000);
-    }
-    Blynk.connect();
-    delay(2000);
-  }
-
   timer.run();
-  server.handleClient();
 }
 
 BLYNK_CONNECTED() {
@@ -434,15 +314,17 @@ BLYNK_WRITE(V0)
 BLYNK_WRITE(InternalPinOTA) {
   String overTheAirURL = param.asString();
   String OTAoutcome;
-  //terminal.println(String("Firmware update URL: ") + overTheAirURL);
+  Serial.println(String("Firmware update URL: ") + overTheAirURL);
 
   // Disconnect, not to interfere with OTA process
   Blynk.disconnect();
 
+  HTTPClient httpClient;
+  httpClient.begin( client, overTheAirURL );
   // Start OTA
-  switch (ESPhttpUpdate.update(overTheAirURL)) {
+  switch (httpUpdate.update(client, overTheAirURL)) {
     case HTTP_UPDATE_FAILED:
-      Serial.println(String("Firmware update failed (error ") + ESPhttpUpdate.getLastError() + "): " + ESPhttpUpdate.getLastErrorString());
+      Serial.println(String("Firmware update failed (error ") + httpUpdate.getLastError() + "): " + httpUpdate.getLastErrorString());
       break;
     case HTTP_UPDATE_NO_UPDATES:
       Serial.println("No firmware updates available.");
